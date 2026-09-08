@@ -687,5 +687,67 @@ class MessagingNotificationTrackingTests: TestBase, AnyCodableAsserts {
             XCTFail("xdm, _experience, or decisioning not found in edge event")
         }
     }
+
+    func test_pushNotification_withoutExdRequestID_stillAddsMessageProfile() {
+        // setup - create mock data with decisioning section but WITHOUT exdRequestID
+        let mockUserInfoWithoutExdRequestID = ["_xdm" :
+                                    ["mixins":
+                                        ["_experience":
+                                            ["customerJourneyManagement":
+                                                ["messageExecution":
+                                                    ["messageExecutionID": "mockExecutionID",
+                                                     "messageID": "mockMessageId",
+                                                     "messageType": "transactional",
+                                                     "campaignID": "mockCampaignID",
+                                                     "campaignVersionID": "mockCampaignVersionID",
+                                                     "batchInstanceID": "mockBatchInstanceID"]
+                                                ],
+                                             "decisioning":
+                                                ["propositions":
+                                                    [["scopeDetails":
+                                                        ["correlationID": "mockCorrelationID"]
+                                                    ]]
+                                                ]
+                                            ]
+                                        ]
+                                    ]
+        ]
+
+        let expectation = XCTestExpectation(description: "Messaging Push Tracking Response")
+        setExpectationEvent(type: EventType.edge, source: EventSource.requestContent, expectedCount: 1)
+        let response = prepareNotificationResponse(withUserInfo: mockUserInfoWithoutExdRequestID)!
+
+        // test
+        Messaging.handleNotificationResponse(response, closure: { _ in
+            expectation.fulfill()
+        })
+
+        // verify
+        wait(for: [expectation], timeout: ASYNC_TIMEOUT)
+        let events = getDispatchedEventsWith(type: EventType.edge, source: EventSource.requestContent)
+        XCTAssertEqual(1, events.count)
+        let edgeEvent = events.first!
+
+        guard let xdm = edgeEvent.data?[MessagingConstants.XDM.Key.XDM] as? [String: Any],
+              let experience = xdm[MessagingConstants.XDM.AdobeKeys.EXPERIENCE] as? [String: Any],
+              let cjm = experience["customerJourneyManagement"] as? [String: Any] else {
+            XCTFail("xdm, _experience, or customerJourneyManagement not found in edge event")
+            return
+        }
+
+        // verify messageProfile.channel._id is present
+        let channel = (cjm["messageProfile"] as? [String: Any])?["channel"] as? [String: Any]
+        XCTAssertEqual("https://ns.adobe.com/xdm/channels/push", channel?["_id"] as? String,
+                       "messageProfile.channel._id should be present when exdRequestID is missing")
+
+        // verify pushChannelContext.platform is present
+        XCTAssertEqual("apns", (cjm["pushChannelContext"] as? [String: Any])?["platform"] as? String,
+                       "pushChannelContext.platform should be present when exdRequestID is missing")
+
+        // verify propositionEventType is NOT added when exdRequestID is missing
+        let decisioning = experience[MessagingConstants.XDM.Inbound.Key.DECISIONING] as? [String: Any]
+        XCTAssertNil(decisioning?[MessagingConstants.XDM.Inbound.Key.PROPOSITION_EVENT_TYPE],
+                     "propositionEventType should not be added when exdRequestID is missing")
+    }
 }
 
